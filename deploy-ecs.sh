@@ -239,8 +239,13 @@ create_task_definition() {
     # Limpar arquivo temporário
     rm -f /tmp/new_task_def.json
     
-    log_success "Nova task definition criada: $new_task_arn"
-    echo "$new_task_arn"
+    if [[ -n "$new_task_arn" && "$new_task_arn" != "None" ]]; then
+        log_success "Nova task definition criada: $new_task_arn"
+        echo "$new_task_arn"
+    else
+        log_error "Falha ao criar task definition"
+        return 1
+    fi
 }
 
 # Função para atualizar serviço ECS
