@@ -218,16 +218,26 @@ create_task_definition() {
     # Criar nova task definition com a nova imagem
     local new_task_def=$(echo "$current_task_def" | jq --arg image "$image_tag" --arg version "$commit_hash" '
         .containerDefinitions[0].image = $image |
-        .containerDefinitions[0].environment += [{"name": "DEPLOY_VERSION", "value": $version}] |
+        if .containerDefinitions[0].environment then
+            .containerDefinitions[0].environment |= map(select(.name != "DEPLOY_VERSION")) + [{"name": "DEPLOY_VERSION", "value": $version}]
+        else
+            .containerDefinitions[0].environment = [{"name": "DEPLOY_VERSION", "value": $version}]
+        end |
         del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .placementConstraints, .compatibilities, .registeredAt, .registeredBy)
     ')
     
+    # Salvar em arquivo temporário para debug
+    echo "$new_task_def" > /tmp/new_task_def.json
+    
     # Registrar nova task definition
-    local new_task_arn=$(echo "$new_task_def" | aws ecs register-task-definition \
+    local new_task_arn=$(aws ecs register-task-definition \
         --region "$REGION" \
-        --cli-input-json file:///dev/stdin \
+        --cli-input-json file:///tmp/new_task_def.json \
         --query 'taskDefinition.taskDefinitionArn' \
         --output text)
+    
+    # Limpar arquivo temporário
+    rm -f /tmp/new_task_def.json
     
     log_success "Nova task definition criada: $new_task_arn"
     echo "$new_task_arn"
