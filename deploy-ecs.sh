@@ -8,9 +8,9 @@ set -e
 
 # Configurações padrão
 DEFAULT_REGION="us-east-1"
-DEFAULT_CLUSTER="cluster-bia-01082025"
-DEFAULT_SERVICE="service-bia-01082025"
-DEFAULT_TASK_FAMILY="task-def-bia-01082025"
+DEFAULT_CLUSTER="cluster-bia-alb"
+DEFAULT_SERVICE="service-bia-alb"
+DEFAULT_TASK_FAMILY="task-def-bia-alb"
 DEFAULT_ECR_REPO="216665870449.dkr.ecr.us-east-1.amazonaws.com/bia"
 DEFAULT_CONTAINER_NAME="bia-app"
 
@@ -365,6 +365,7 @@ deploy() {
         log_error "Falha na etapa de build"
         exit 1
     fi
+    echo
     
     # Push
     log_info "=== ETAPA 2: PUSH ==="
@@ -372,6 +373,7 @@ deploy() {
         log_error "Falha na etapa de push"
         exit 1
     fi
+    echo
     
     # Criar nova task definition
     log_info "=== ETAPA 3: TASK DEFINITION ==="
@@ -380,6 +382,7 @@ deploy() {
         log_error "Falha ao criar task definition"
         exit 1
     fi
+    echo
     
     # Atualizar serviço
     log_info "=== ETAPA 4: UPDATE SERVICE ==="
@@ -387,6 +390,7 @@ deploy() {
         log_error "Falha ao atualizar serviço"
         exit 1
     fi
+    echo
     
     log_success "🎉 Deploy concluído com sucesso!"
     log_info "Versão deployada: $commit_hash"
@@ -471,8 +475,14 @@ case $COMMAND in
     update)
         if [[ -f .last_build_version ]]; then
             commit_hash=$(cat .last_build_version)
+            log_info "Usando versão: $commit_hash"
             new_task_arn=$(create_task_definition "$commit_hash")
-            update_service "$new_task_arn"
+            if [[ $? -eq 0 && -n "$new_task_arn" ]]; then
+                update_service "$new_task_arn"
+            else
+                log_error "Falha ao criar task definition"
+                exit 1
+            fi
         else
             log_error "Nenhuma versão encontrada. Execute 'build' primeiro."
             exit 1
