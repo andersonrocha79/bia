@@ -207,6 +207,7 @@ create_task_definition() {
     local image_tag="$ECR_REPO:$commit_hash"
     
     log_info "Criando nova task definition..."
+    log_info "Imagem: $image_tag"
     
     # Obter task definition atual
     local current_task_def=$(aws ecs describe-task-definition \
@@ -214,6 +215,11 @@ create_task_definition() {
         --region "$REGION" \
         --query 'taskDefinition' \
         --output json)
+    
+    if [[ -z "$current_task_def" || "$current_task_def" == "null" ]]; then
+        log_error "Não foi possível obter a task definition atual: $TASK_FAMILY"
+        return 1
+    fi
     
     # Criar nova task definition com a nova imagem
     local new_task_def=$(echo "$current_task_def" | jq --arg image "$image_tag" --arg version "$commit_hash" '
@@ -229,21 +235,26 @@ create_task_definition() {
     # Salvar em arquivo temporário para debug
     echo "$new_task_def" > /tmp/new_task_def.json
     
-    # Registrar nova task definition
-    local new_task_arn=$(aws ecs register-task-definition \
+    log_info "Registrando nova task definition..."
+    
+    # Registrar nova task definition e capturar toda a resposta
+    local register_response=$(aws ecs register-task-definition \
         --region "$REGION" \
         --cli-input-json file:///tmp/new_task_def.json \
-        --query 'taskDefinition.taskDefinitionArn' \
-        --output text)
+        --output json)
+    
+    # Extrair o ARN da task definition
+    local new_task_arn=$(echo "$register_response" | jq -r '.taskDefinition.taskDefinitionArn')
     
     # Limpar arquivo temporário
     rm -f /tmp/new_task_def.json
     
-    if [[ -n "$new_task_arn" && "$new_task_arn" != "None" ]]; then
+    if [[ -n "$new_task_arn" && "$new_task_arn" != "null" && "$new_task_arn" != "None" ]]; then
         log_success "Nova task definition criada: $new_task_arn"
         echo "$new_task_arn"
     else
         log_error "Falha ao criar task definition"
+        log_error "Resposta da AWS: $register_response"
         return 1
     fi
 }
@@ -252,15 +263,31 @@ create_task_definition() {
 update_service() {
     local task_definition_arn="$1"
     
-    log_info "Atualizando serviço ECS..."
+    if [[ -z "$task_definition_arn" ]]; then
+        log_error "ARN da task definition não fornecido"
+        return 1
+    fi
     
-    aws ecs update-service \
+    log_info "Atualizando serviço ECS..."
+    log_info "Task Definition ARN: $task_definition_arn"
+    log_info "Cluster: $CLUSTER"
+    log_info "Service: $SERVICE"
+    
+    # Atualizar o serviço
+    local update_response=$(aws ecs update-service \
         --cluster "$CLUSTER" \
         --service "$SERVICE" \
         --task-definition "$task_definition_arn" \
         --region "$REGION" \
-        --query 'service.{serviceName:serviceName,taskDefinition:taskDefinition,desiredCount:desiredCount,runningCount:runningCount}' \
-        --output table
+        --output json)
+    
+    if [[ $? -ne 0 ]]; then
+        log_error "Falha ao atualizar o serviço ECS"
+        return 1
+    fi
+    
+    # Mostrar informações do serviço atualizado
+    echo "$update_response" | jq -r '.service | {serviceName, taskDefinition, desiredCount, runningCount}'
     
     log_info "Aguardando estabilização do serviço..."
     aws ecs wait services-stable \
@@ -268,7 +295,12 @@ update_service() {
         --services "$SERVICE" \
         --region "$REGION"
     
-    log_success "Serviço atualizado com sucesso!"
+    if [[ $? -eq 0 ]]; then
+        log_success "Serviço atualizado com sucesso!"
+    else
+        log_warning "Timeout aguardando estabilização do serviço"
+        log_info "Verifique o status do serviço no console AWS"
+    fi
 }
 
 # Função para listar versões disponíveis
@@ -328,19 +360,37 @@ deploy() {
     echo
     
     # Build
-    build_image
+    log_info "=== ETAPA 1: BUILD ==="
+    if ! build_image; then
+        log_error "Falha na etapa de build"
+        exit 1
+    fi
     
     # Push
-    push_image
+    log_info "=== ETAPA 2: PUSH ==="
+    if ! push_image; then
+        log_error "Falha na etapa de push"
+        exit 1
+    fi
     
     # Criar nova task definition
+    log_info "=== ETAPA 3: TASK DEFINITION ==="
     local new_task_arn=$(create_task_definition "$commit_hash")
+    if [[ $? -ne 0 || -z "$new_task_arn" ]]; then
+        log_error "Falha ao criar task definition"
+        exit 1
+    fi
     
     # Atualizar serviço
-    update_service "$new_task_arn"
+    log_info "=== ETAPA 4: UPDATE SERVICE ==="
+    if ! update_service "$new_task_arn"; then
+        log_error "Falha ao atualizar serviço"
+        exit 1
+    fi
     
     log_success "🎉 Deploy concluído com sucesso!"
     log_info "Versão deployada: $commit_hash"
+    log_info "Task Definition: $new_task_arn"
 }
 
 # Parsing de argumentos
